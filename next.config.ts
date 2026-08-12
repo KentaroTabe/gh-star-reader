@@ -15,6 +15,9 @@ const devOrigins = (process.env.DEV_ORIGINS ?? "")
 
 const config: NextConfig = {
   reactStrictMode: true,
+  // Ships a server that carries only the files it actually imports, so the
+  // deployed image does not include node_modules.
+  output: "standalone",
   ...(devOrigins.length > 0 ? { allowedDevOrigins: devOrigins } : {}),
 };
 

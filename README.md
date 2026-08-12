@@ -51,6 +51,8 @@ http://localhost:3000 を開いてください。
 | `ALLOW_PRIVATE_REPOS` | 任意 | プライベートリポジトリの要約を許可する。既定は無効 |
 | `DATA_DIR` | 任意 | 保存先。既定は `./.data` |
 | `DEV_ORIGINS` | 任意 | 開発サーバーを LAN アドレスで開くときのホスト（カンマ区切り）。下記参照 |
+| `INVITE_REQUIRED` | 任意 | 招待リンクを必須にする。既定は本番ビルドで有効、開発で無効 |
+| `BASE_URL` | 任意 | 招待リンクを印字するときの URL。`npm run invite` でのみ使う |
 
 いずれもサーバー側でのみ読みます。ブラウザには渡りません。
 
@@ -99,6 +101,53 @@ JSON モード（`response_format`）に対応していない提供元では、�
 実害はありませんが、そのため `ALLOW_PRIVATE_REPOS` は既定で無効です。
 自分がアクセスできるプライベートリポジトリにスターを付けていた場合、
 明示的に許可しない限り要約は行われません。
+
+## 人に渡して使ってもらう
+
+一般公開はせず、渡した相手だけが使える形にしてあります。ログイン画面は
+ありません。人ごとに URL を発行し、それを手渡します。
+
+```bash
+npm run invite -- add 田辺       # 招待リンクを発行する
+npm run invite -- list           # 誰に渡したかを見る
+npm run invite -- revoke <token> # 失効させる（読了記録は残る）
+```
+
+相手がその URL を一度開くと、トークンが HttpOnly cookie に移り、以後は
+普通のページとして使えます。**リンクそのものが鍵**なので、公開の場所には
+置かないでください。失効させれば次のリクエストから 401 になります。
+
+読了の記録は**閲覧者 × 見ている GitHub アカウント**の組で分かれます。同じ
+アカウントの本棚を 2 人が開いても、互いの「読了」は見えませんし、消せません。
+要約のキャッシュだけは全員で共有します（同じ内容なら誰が開いても同じ結果に
+なるため）。
+
+`GITHUB_TOKEN` はサーバーを動かす人のものなので、**招待された人にプライベート
+リポジトリは見せません**（`ALLOW_PRIVATE_REPOS` を有効にしない限り、一覧から
+除外されます）。
+
+### Fly.io に置く
+
+`Dockerfile` と `fly.toml` が同梱してあります。永続ディスクが要るのは、
+要約キャッシュ・読了記録・招待リストがファイルだからです（消えると全員の
+リンクが無効になります）。
+
+```bash
+brew install flyctl
+fly auth login
+fly launch --no-deploy          # app 名とリージョンを確認する
+fly volumes create gh_star_reader_data --size 1
+fly secrets set LLM_API_KEY=… GITHUB_TOKEN=…
+fly deploy
+fly ssh console -C "node scripts/invite.mjs add 田辺"
+```
+
+`GITHUB_TOKEN` は実質必須です。未設定だと 60 リクエスト/時で、要約 1 件が
+20 リクエスト前後を使うため、数人で触ればすぐ止まります。
+
+同じ `Dockerfile` は Render でもそのまま動きます（Disk を `/data` に
+マウントし、`DATA_DIR=/data` と `INVITE_REQUIRED=true` を設定してください）。
+Vercel には置けません。ファイルに直接書くためです。
 
 ## 設計方針
 
@@ -149,12 +198,16 @@ GitHub 側 : スター = 追加専用の入力キュー（読み取り専用）
 ## 保存されるもの
 
 ```
-.data/summaries.json   要約のキャッシュ
-.data/reading.json     読了記録
+.data/summaries.json   要約のキャッシュ（全員で共有）
+.data/languages.json   言語構成のキャッシュ
+.data/reading.json     読了記録（閲覧者 × GitHub アカウント）
+.data/invites.json     招待リンク
 ```
 
-どちらもローカルのファイルで、gitignore 済みです。消しても壊れません
-（要約は作り直され、読了記録だけが失われます）。
+いずれもファイルで、gitignore 済みです。キャッシュは消しても作り直されますが、
+`reading.json` と `invites.json` は消すと戻りません（読了記録が失われ、
+配った招待リンクが全部無効になります）。デプロイ先で永続ディスクが要るのは
+このためです。
 
 ## 制約
 

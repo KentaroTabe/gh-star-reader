@@ -14,12 +14,21 @@
 スターした順に、1 リポジトリ 1 本の縦棒を並べる。
 
 - 高さ: 未読期間。0 日で 28%、3 年で 100%。読了済みは 16% に潰す。
-- 色: 主要言語（GitHub の言語カラーを使用）。
+- 色: 言語構成をバイト比で下から積む（GitHub の言語カラーを使用）。3% 未満は
+  畳んで残りへ按分する。取得前と、GitHub が言語を返さない場合は主要言語 1 色。
 - 読了済みは不透明度 0.22 に落とす。
 
 数字で「未読 127 件」と言うより、放置の分布が一目で分かる。
 
-## API
+## アクセス
+
+ログインはない。人ごとに招待リンク `/i/{token}` を発行し、開いた時点で
+トークンを HttpOnly cookie に移す。トークンは閲覧者 ID に紐づき、ID の方が
+読了記録のキーになる。リンクを再発行しても読了記録は保たれ、失効させても
+記録は消えない。
+
+`INVITE_REQUIRED`（既定は本番で有効）が真のとき、招待のない相手には画面も
+API も渡さない。偽のときは `owner` という単一の閲覧者として扱う。
 
 ### `GET /api/starred?user={username}`
 
@@ -48,9 +57,21 @@
 { "summary": { /* CachedSummary */ }, "cached": true }
 ```
 
+### `POST /api/languages`
+
+```json
+{ "repos": [{ "fullName": "vercel/next.js", "pushedAt": "…" }] }
+```
+
+本棚の色に使う言語構成。キャッシュにあるものと、1 リクエストあたり最大 60 件
+までの新規取得を返し、残り件数を `remaining` で伝える。クライアントは
+0 になるまで繰り返す。
+
 ### `GET` / `POST /api/reading`
 
-読了記録の取得と更新。`POST` のボディは `{ "id": "owner/name", "read": true }`。
+読了記録の取得と更新。`GET` は `?user={githubUser}`、`POST` のボディは
+`{ "user": "octocat", "id": "owner/name", "read": true }`。閲覧者は cookie
+から決まるのでボディには含めない。
 
 ## 要約の入力
 
@@ -102,7 +123,9 @@ type Summary = {
 | ファイル | 内容 | キー |
 | --- | --- | --- |
 | `.data/summaries.json` | 要約キャッシュ | `owner/name@treeSha` |
-| `.data/reading.json` | 読了記録 | `owner/name` |
+| `.data/languages.json` | 言語構成キャッシュ | `owner/name@pushedAt` |
+| `.data/reading.json` | 読了記録 | `閲覧者ID → GitHubユーザー → owner/name` |
+| `.data/invites.json` | 招待リンク | `token` |
 
 どちらも gitignore 済み。書き込みは直列化し、テンポラリファイル経由で
 rename する。
