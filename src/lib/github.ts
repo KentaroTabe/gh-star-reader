@@ -1,3 +1,4 @@
+import { env } from "./env";
 import type { StarredRepo } from "./types";
 
 const API = "https://api.github.com";
@@ -32,7 +33,7 @@ function buildHeaders(accept: string): Record<string, string> {
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "gh-star-reader",
   };
-  const token = process.env.GITHUB_TOKEN;
+  const token = env("GITHUB_TOKEN");
   if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
 }

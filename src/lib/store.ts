@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+import { env } from "./env";
 import type { CachedSummary, ReadingMap } from "./types";
 
 /**
@@ -12,7 +13,7 @@ import type { CachedSummary, ReadingMap } from "./types";
  * state is written here and GitHub is only ever read from.
  */
 
-const DATA_DIR = process.env.DATA_DIR ?? path.join(process.cwd(), ".data");
+const DATA_DIR = env("DATA_DIR") ?? path.join(process.cwd(), ".data");
 const SUMMARY_FILE = path.join(DATA_DIR, "summaries.json");
 const READING_FILE = path.join(DATA_DIR, "reading.json");
 
