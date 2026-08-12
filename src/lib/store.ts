@@ -16,8 +16,10 @@ import type { CachedSummary, ReadingMap } from "./types";
 const DATA_DIR = env("DATA_DIR") ?? path.join(process.cwd(), ".data");
 const SUMMARY_FILE = path.join(DATA_DIR, "summaries.json");
 const READING_FILE = path.join(DATA_DIR, "reading.json");
+const LANGUAGE_FILE = path.join(DATA_DIR, "languages.json");
 
 type SummaryMap = Record<string, CachedSummary>;
+type LanguageMap = Record<string, Record<string, number>>;
 
 /** Serialises writes so two concurrent requests can't clobber each other. */
 let writeChain: Promise<unknown> = Promise.resolve();
@@ -70,6 +72,36 @@ export async function putSummary(key: string, summary: CachedSummary): Promise<v
     const map = await readJson<SummaryMap>(SUMMARY_FILE, {});
     map[key] = summary;
     await writeJson(SUMMARY_FILE, map);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Language breakdown cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Keyed by the last push, for the same reason summaries are keyed by tree SHA:
+ * the answer can only change when the repository does. No expiry to tune.
+ */
+export function languageKey(fullName: string, pushedAt: string): string {
+  return `${fullName.toLowerCase()}@${pushedAt}`;
+}
+
+export async function getLanguages(keys: string[]): Promise<LanguageMap> {
+  const map = await readJson<LanguageMap>(LANGUAGE_FILE, {});
+  const found: LanguageMap = {};
+  for (const key of keys) {
+    const entry = map[key];
+    if (entry) found[key] = entry;
+  }
+  return found;
+}
+
+export async function putLanguages(entries: LanguageMap): Promise<void> {
+  if (Object.keys(entries).length === 0) return;
+  await queue(async () => {
+    const map = await readJson<LanguageMap>(LANGUAGE_FILE, {});
+    await writeJson(LANGUAGE_FILE, { ...map, ...entries });
   });
 }
 

@@ -17,6 +17,13 @@ const SORT_LABELS: Record<SortKey, string> = {
   stars: "スター数が多い順",
 };
 
+/**
+ * Rounds of language fetching per list. The server answers with what it has
+ * cached plus a bounded batch of new lookups, so a full shelf takes a few
+ * rounds; the ceiling is only here to stop a bug from looping forever.
+ */
+const MAX_LANGUAGE_ROUNDS = 20;
+
 export default function Page() {
   const [username, setUsername] = useState("");
   const [repos, setRepos] = useState<StarredRepo[] | null>(null);
@@ -24,6 +31,8 @@ export default function Page() {
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
 
+  /** Bytes per language, keyed by lowercased full name. Fills in after the list. */
+  const [breakdowns, setBreakdowns] = useState<Record<string, Record<string, number>>>({});
   const [reading, setReading] = useState<ReadingMap>({});
   const [summaries, setSummaries] = useState<Record<string, CachedSummary>>({});
   const [pending, setPending] = useState<Record<string, true>>({});
@@ -41,6 +50,41 @@ export default function Page() {
       .catch(() => undefined);
   }, []);
 
+  // The shelf paints each repository by its language mix, which the starred
+  // list does not carry — it names one language per repository. Fetched after
+  // the list is on screen so a large shelf colours in progressively rather than
+  // holding up the first paint.
+  useEffect(() => {
+    if (!repos || repos.length === 0) return;
+    let cancelled = false;
+
+    const load = async () => {
+      const wanted = repos.map((repo) => ({ fullName: repo.fullName, pushedAt: repo.pushedAt }));
+      for (let round = 0; round < MAX_LANGUAGE_ROUNDS && !cancelled; round++) {
+        const response = await fetch("/api/languages", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ repos: wanted }),
+        });
+        if (!response.ok || cancelled) return;
+        const data = (await response.json()) as {
+          languages?: Record<string, Record<string, number>>;
+          remaining?: number;
+        };
+        if (cancelled) return;
+        setBreakdowns((current) => ({ ...current, ...(data.languages ?? {}) }));
+        if (!data.remaining) return;
+      }
+    };
+
+    // A failure here costs colour, not function: the shelf keeps the primary
+    // language it already had.
+    void load().catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [repos]);
+
   const loadStars = useCallback(async (name: string) => {
     setLoading(true);
     setListError(null);
@@ -54,6 +98,7 @@ export default function Page() {
       };
       if (!response.ok) throw new Error(data.error ?? "取得に失敗しました。");
       setRepos(data.repos ?? []);
+      setBreakdowns({});
       setTruncated(Boolean(data.truncated));
     } catch (error) {
       setRepos(null);
@@ -241,6 +286,7 @@ export default function Page() {
           <Shelf
             repos={visible}
             reading={reading}
+            languages={breakdowns}
             selectedId={openId}
             onSelect={(id) => {
               const repo = visible.find((item) => item.id === id);

@@ -149,6 +149,19 @@ export async function fetchStarred(
   return { repos, truncated: true };
 }
 
+/**
+ * Bytes per language for one repository.
+ *
+ * The starred list only carries the single language GitHub calls primary, which
+ * is enough for a row label but not for a shelf that claims to show what a
+ * repository is made of. This costs one request per repository, so the result
+ * is cached on disk and keyed by the repository's last push.
+ */
+export async function fetchLanguages(fullName: string): Promise<Record<string, number>> {
+  const slug = fullName.split("/").map(encodeURIComponent).join("/");
+  return (await optionalJson<Record<string, number>>(`${API}/repos/${slug}/languages`)) ?? {};
+}
+
 // ---------------------------------------------------------------------------
 // Repository context
 // ---------------------------------------------------------------------------
