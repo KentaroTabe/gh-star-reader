@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import Shelf from "@/components/Shelf";
+import LanguageBar from "@/components/LanguageBar";
 import SummaryPanel from "@/components/SummaryPanel";
 import { compactCount, relativeAge, yearMonth } from "@/lib/format";
 import { languageColor } from "@/lib/languageColors";
+import { aggregateLanguages, matchesSelection } from "@/lib/languages";
 import type { CachedSummary, ReadingMap, StarredRepo } from "@/lib/types";
 
 type SortKey = "oldest" | "newest" | "stale" | "stars";
@@ -42,7 +43,8 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   const [unreadOnly, setUnreadOnly] = useState(true);
-  const [language, setLanguage] = useState("all");
+  /** The language segment in the bar, or null for the whole shelf. */
+  const [language, setLanguage] = useState<string | null>(null);
   const [sort, setSort] = useState<SortKey>("oldest");
 
   // Read state belongs to a pair — this viewer, this GitHub account — so it can
@@ -111,6 +113,7 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
       setRepos(data.repos ?? []);
       setBreakdowns({});
       setReading({});
+      setLanguage(null);
       setAccount(name);
       setTruncated(Boolean(data.truncated));
     } catch (error) {
@@ -194,21 +197,24 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
     }
   }, []);
 
-  const languages = useMemo(() => {
+  // The bar describes the pool the reader is actually looking at, so it follows
+  // the unread filter but not the language selection — otherwise choosing a
+  // language would redraw the bar as a single full-width block.
+  const pool = useMemo(() => {
     if (!repos) return [];
-    const seen = new Map<string, number>();
-    for (const repo of repos) {
-      if (!repo.language) continue;
-      seen.set(repo.language, (seen.get(repo.language) ?? 0) + 1);
-    }
-    return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(([name]) => name);
-  }, [repos]);
+    return unreadOnly ? repos.filter((repo) => !reading[repo.id]) : repos;
+  }, [repos, reading, unreadOnly]);
+
+  const shares = useMemo(() => aggregateLanguages(pool, breakdowns), [pool, breakdowns]);
+
+  const selectedShare = useMemo(
+    () => shares.find((item) => item.name === language) ?? null,
+    [shares, language],
+  );
 
   const visible = useMemo(() => {
-    if (!repos) return [];
-    const filtered = repos.filter((repo) => {
-      if (unreadOnly && reading[repo.id]) return false;
-      if (language !== "all" && repo.language !== language) return false;
+    const filtered = pool.filter((repo) => {
+      if (selectedShare && !matchesSelection(repo, breakdowns[repo.id], selectedShare)) return false;
       return true;
     });
 
@@ -220,7 +226,7 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
     };
 
     return [...filtered].sort(compare[sort]);
-  }, [repos, reading, unreadOnly, language, sort]);
+  }, [pool, breakdowns, selectedShare, sort]);
 
   const unreadCount = repos?.filter((repo) => !reading[repo.id]).length ?? 0;
   const oldestUnread = useMemo(() => {
@@ -297,14 +303,12 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
             )}
           </section>
 
-          <Shelf
-            repos={visible}
-            reading={reading}
-            languages={breakdowns}
-            selectedId={openId}
-            onSelect={(id) => {
-              const repo = visible.find((item) => item.id === id);
-              if (repo) void openEntry(repo);
+          <LanguageBar
+            shares={shares}
+            selected={language}
+            onSelect={(name) => {
+              setLanguage(name);
+              setOpenId(null);
             }}
           />
 
@@ -317,23 +321,6 @@ export default function Reader({ viewerName }: { viewerName: string | null }) {
               />
               未読のみ
             </label>
-
-            <span className="controls__group">
-              言語
-              <select
-                className="controls__select"
-                value={language}
-                onChange={(event) => setLanguage(event.target.value)}
-                aria-label="言語で絞り込む"
-              >
-                <option value="all">すべて</option>
-                {languages.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </span>
 
             <span className="controls__group">
               並び

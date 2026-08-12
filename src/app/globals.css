@@ -181,53 +181,90 @@ button {
   margin-top: 0.5rem;
 }
 
-/* --- the shelf: one spine per repository --------------------------------- */
+/* --- the language bar: the whole shelf in one line ----------------------- */
 
-.shelf {
+.langbar {
   margin-block: 1.5rem 0.5rem;
 }
 
-.shelf__rail {
+.langbar__rail {
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 92px;
-  padding: 0 1px;
+  gap: 1px;
+  height: 34px;
   border-bottom: 1px solid var(--ink);
   overflow: hidden;
 }
 
-.spine {
-  flex: 1 1 0;
-  min-width: 2px;
+.langbar__segment {
+  flex-basis: 0;
+  min-width: 3px;
   border: 0;
   padding: 0;
-  background: var(--ink-faint);
-  transition: transform 120ms ease, filter 120ms ease;
-  transform-origin: bottom center;
+  transition: opacity 120ms ease, filter 120ms ease;
 }
 
-.spine:hover,
-.spine:focus-visible {
-  transform: scaleY(1.06);
-  filter: brightness(1.15);
+.langbar__segment:hover {
+  filter: brightness(1.12);
 }
 
-.spine[data-read="true"] {
-  opacity: 0.22;
+.langbar__segment[data-dimmed="true"] {
+  opacity: 0.28;
 }
 
-.spine[data-selected="true"] {
+.langbar__segment[data-selected="true"] {
   box-shadow: inset 0 0 0 2px var(--ink);
 }
 
-.shelf__legend {
+/* The label a screen reader reads; the colour is the label for everyone else. */
+.langbar__hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.legend {
   display: flex;
-  justify-content: space-between;
-  font-size: 11px;
-  letter-spacing: 0.1em;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 0;
+  padding: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.legend__item[data-selected="true"] {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.legend__swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+}
+
+.legend__share {
   color: var(--ink-faint);
-  margin-top: 0.5rem;
+}
+
+.langbar__note {
+  margin: 0.5rem 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
 }
 
 /* --- controls ------------------------------------------------------------ */
@@ -560,8 +597,8 @@ button {
     --shell: calc(100% - 2rem);
   }
 
-  .shelf__rail {
-    height: 64px;
+  .langbar__rail {
+    height: 28px;
   }
 
   .entry__head {
