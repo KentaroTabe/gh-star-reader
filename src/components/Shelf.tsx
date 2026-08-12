@@ -17,10 +17,13 @@ function spineHeight(repo: StarredRepo, isRead: boolean): string {
 const MIN_SHARE = 0.03;
 
 /**
- * A spine painted with the repository's language breakdown, stacked bottom-up
- * in proportion to bytes. The single primary language is what the row below
- * says; the shelf says what the repository is actually made of, which for most
- * projects is three or four languages, not one.
+ * A spine painted with the repository's language breakdown, divided left to
+ * right in proportion to bytes. The single primary language is what the row
+ * below says; the shelf says what the repository is actually made of, which for
+ * most projects is three or four languages, not one.
+ *
+ * Across the bar rather than up it, so the height stays one thing only: how
+ * long this has gone unread. Two quantities on the same axis read as one.
  *
  * Falls back to the flat primary colour while the breakdown is still loading,
  * or when GitHub reports none.
@@ -51,7 +54,7 @@ function spineBackground(repo: StarredRepo, languages: Record<string, number> | 
     cursor = end;
   });
 
-  return `linear-gradient(to top, ${stops.join(", ")})`;
+  return `linear-gradient(to right, ${stops.join(", ")})`;
 }
 
 /** "TypeScript 62% / CSS 24% / Shell 14%" — the hover tooltip for a spine. */
