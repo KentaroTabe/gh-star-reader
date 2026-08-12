@@ -1,3 +1,4 @@
+import { currentViewer, unauthorized } from "@/lib/auth";
 import { fetchLanguages, GitHubError } from "@/lib/github";
 import { getLanguages, languageKey, putLanguages } from "@/lib/store";
 
@@ -17,6 +18,8 @@ type Item = { fullName?: string; pushedAt?: string };
 type Body = { repos?: Item[] };
 
 export async function POST(request: Request) {
+  if (!(await currentViewer())) return unauthorized();
+
   let body: Body;
   try {
     body = (await request.json()) as Body;

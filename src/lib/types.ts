@@ -53,4 +53,17 @@ export type ReadingRecord = {
   readAt: string;
 };
 
+/** repoId -> record. What one viewer has read of one GitHub account's stars. */
 export type ReadingMap = Record<string, ReadingRecord>;
+
+/** GitHub account being browsed -> that account's read state. */
+export type ViewerReading = Record<string, ReadingMap>;
+
+/**
+ * viewer id -> everything that viewer has read.
+ *
+ * Two levels, because both vary independently: several people share one
+ * deployment, and each of them may browse several GitHub accounts' stars.
+ * Reading someone else's shelf must not mark it read for its owner.
+ */
+export type ReadingStore = Record<string, ViewerReading>;

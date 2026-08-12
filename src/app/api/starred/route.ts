@@ -1,9 +1,13 @@
+import { currentViewer, unauthorized } from "@/lib/auth";
 import { fetchStarred, GitHubError } from "@/lib/github";
+import { privateReposAllowed } from "@/lib/summarize";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  if (!(await currentViewer())) return unauthorized();
+
   const username = new URL(request.url).searchParams.get("user")?.trim();
 
   if (!username) {
@@ -12,7 +16,13 @@ export async function GET(request: Request) {
 
   try {
     const { repos, truncated } = await fetchStarred(username);
-    return Response.json({ username, repos, truncated });
+
+    // GITHUB_TOKEN belongs to whoever runs the server, not to whoever is
+    // looking. Anything it can see that the public cannot — private stars —
+    // would otherwise be published to every invited viewer.
+    const visible = privateReposAllowed() ? repos : repos.filter((repo) => !repo.isPrivate);
+
+    return Response.json({ username, repos: visible, truncated });
   } catch (error) {
     if (error instanceof GitHubError) {
       return Response.json({ error: describe(error, username) }, { status: error.status });

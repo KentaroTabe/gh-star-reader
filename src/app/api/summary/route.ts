@@ -1,3 +1,4 @@
+import { currentViewer, unauthorized } from "@/lib/auth";
 import { fetchRepoContext, GitHubError } from "@/lib/github";
 import { getSummary, putSummary, summaryKey } from "@/lib/store";
 import { modelName, privateReposAllowed, summarize, SummarizeError } from "@/lib/summarize";
@@ -10,6 +11,8 @@ export const maxDuration = 120;
 type Body = { owner?: string; name?: string };
 
 export async function POST(request: Request) {
+  if (!(await currentViewer())) return unauthorized();
+
   let body: Body;
   try {
     body = (await request.json()) as Body;
