@@ -1,7 +1,14 @@
 "use client";
 
-import { languageColor } from "@/lib/languageColors";
+import { languageColor, readableInk } from "@/lib/languageColors";
 import { OTHER, type LanguageShare } from "@/lib/languages";
+
+/**
+ * Below this the segment is too narrow to hold a word, and a clipped fragment
+ * of a language name reads worse than none. Those keep the legend and the
+ * tooltip.
+ */
+const LABEL_MIN_SHARE = 0.07;
 
 type Props = {
   shares: LanguageShare[];
@@ -39,16 +46,23 @@ export default function LanguageBar({ shares, selected, onSelect }: Props) {
             className="langbar__segment"
             data-selected={item.name === selected}
             data-dimmed={selected !== null && item.name !== selected}
-            style={{ flexGrow: item.share, background: colorFor(item.name) }}
+            style={{
+              flexGrow: item.share,
+              background: colorFor(item.name),
+              color: readableInk(colorFor(item.name)),
+            }}
             title={`${item.name} ${percent(item.share)} — 主に使うのは ${item.repoCount} 件${
               item.folded.length > 0 ? `\n${item.folded.join(", ")}` : ""
             }`}
+            aria-label={`${item.name} ${percent(item.share)}、主に使うのは ${item.repoCount} 件`}
             aria-pressed={item.name === selected}
             onClick={() => onSelect(item.name === selected ? null : item.name)}
           >
-            <span className="langbar__hidden">
-              {item.name} {percent(item.share)}
-            </span>
+            {item.share >= LABEL_MIN_SHARE && (
+              <span className="langbar__label" aria-hidden="true">
+                {item.name} {percent(item.share)}
+              </span>
+            )}
           </button>
         ))}
       </div>
