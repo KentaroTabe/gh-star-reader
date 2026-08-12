@@ -39,9 +39,10 @@
 
 1. `fetchRepoContext` でメタ情報・言語比率・ファイル一覧・README・
    依存定義を取得する。小規模なら主要ソースも取得する。
-2. キャッシュキー `フルネーム@ツリーSHA` で照会。あればそれを返す。
-3. なければ Claude API を呼び、JSON を検証して保存する。
-4. プライベートリポジトリは保存しない。
+2. プライベートリポジトリで `ALLOW_PRIVATE_REPOS` が偽なら 403 を返す。
+3. キャッシュキー `フルネーム@ツリーSHA` で照会。あればそれを返す。
+4. なければ OpenAI 互換の chat-completions を呼び、JSON を検証して保存する。
+5. プライベートリポジトリは保存しない。
 
 ```json
 { "summary": { /* CachedSummary */ }, "cached": true }

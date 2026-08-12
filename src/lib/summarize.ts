@@ -1,9 +1,32 @@
+import { env } from "./env";
 import type { RepoContext } from "./github";
 import { buildPrompt } from "./prompt";
 import type { DesignNote, EntryPoint, Summary } from "./types";
 
-const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL = "claude-sonnet-5";
+/**
+ * The model provider is any OpenAI-compatible chat-completions endpoint.
+ * Nothing here is specific to one vendor: base URL, model ID and key all come
+ * from the environment, so switching provider is an .env.local edit.
+ */
+
+const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
+const DEFAULT_MODEL = "gemini-3.6-flash";
+/**
+ * Thinking tokens are charged against this budget and are not part of the
+ * answer, so the cap has to cover both. Too low and the response comes back
+ * empty with finish_reason "length" — all budget spent before the first word.
+ */
+const MAX_OUTPUT_TOKENS = 8000;
+/** Per attempt. Retries share the deadline below, so this is not the total. */
+const REQUEST_TIMEOUT_MS = 45_000;
+/** The whole call, retries included. Below the route's maxDuration (120s). */
+const TOTAL_DEADLINE_MS = 100_000;
+const MAX_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 1_000;
+/** Longer than this and waiting is worse than telling the user to come back. */
+const MAX_RETRY_AFTER_MS = 20_000;
+/** Transient by definition: the same request usually succeeds seconds later. */
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 export class SummarizeError extends Error {
   /** Raw model output, when the failure was a parse failure. Shown in the UI. */
@@ -16,61 +39,249 @@ export class SummarizeError extends Error {
   }
 }
 
-type ContentBlock = { type: string; text?: string };
-type MessagesResponse = { content: ContentBlock[] };
+type ChatMessage = { role: "system" | "user"; content: string };
+
+type ContentPart = { type?: string; text?: string };
+
+type ChatChoice = {
+  message?: {
+    content?: string | ContentPart[] | null;
+    /** Some providers put chain-of-thought here. It is never part of the answer. */
+    reasoning_content?: string | null;
+  };
+  finish_reason?: string | null;
+};
+
+type ChatResponse = { choices?: ChatChoice[] };
 
 export function modelName(): string {
-  return process.env.ANTHROPIC_MODEL ?? DEFAULT_MODEL;
+  return env("LLM_MODEL") ?? DEFAULT_MODEL;
+}
+
+/**
+ * Whether private repository contents may leave the machine. Off unless asked
+ * for: free tiers commonly reserve the right to train on what you send them,
+ * and a private repository is the one thing here that is not already public.
+ */
+export function privateReposAllowed(): boolean {
+  const value = env("ALLOW_PRIVATE_REPOS")?.toLowerCase();
+  return value === "true" || value === "1";
+}
+
+function endpoint(): string {
+  const base = (env("LLM_BASE_URL") ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  return `${base}/chat/completions`;
+}
+
+function providerHost(): string {
+  try {
+    return new URL(endpoint()).host;
+  } catch {
+    return env("LLM_BASE_URL") ?? DEFAULT_BASE_URL;
+  }
 }
 
 export async function summarize(context: RepoContext): Promise<Summary> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = env("LLM_API_KEY");
   if (!apiKey) {
     throw new SummarizeError(
-      "ANTHROPIC_API_KEY が設定されていません。.env.example を .env.local にコピーして値を入れてください。",
+      "LLM_API_KEY が設定されていません。.env.example を .env.local にコピーして値を入れてください。",
     );
   }
 
   const { system, user } = buildPrompt(context);
+  const messages: ChatMessage[] = [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
 
-  const response = await fetch(MESSAGES_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    // No temperature or top_p. Sonnet 5 rejects non-default sampling
-    // parameters with a 400, so they are omitted rather than set to a value.
-    body: JSON.stringify({
-      model: modelName(),
-      max_tokens: 4000,
-      system,
-      messages: [{ role: "user", content: user }],
-    }),
-  });
+  const deadline = Date.now() + TOTAL_DEADLINE_MS;
 
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const body = (await response.json()) as { error?: { message?: string } };
-      detail = body.error?.message ?? detail;
-    } catch {
-      // Non-JSON error body; the status text stands.
+  // JSON mode is not implemented by every OpenAI-compatible provider. Ask for
+  // it first; if the provider rejects the field, send the same request without
+  // it. parseSummary can find the object either way, so the fallback only costs
+  // one extra round trip on providers that lack the feature.
+  let response = await post(apiKey, messages, true, deadline);
+  if (response.status === 400) {
+    const detail = await errorDetail(response);
+    if (!/response_format|json/i.test(detail)) {
+      throw new SummarizeError(describe(400, detail, response));
     }
-    throw new SummarizeError(`Claude API がエラーを返しました (${response.status}): ${detail}`);
+    response = await post(apiKey, messages, false, deadline);
   }
 
-  const body = (await response.json()) as MessagesResponse;
+  if (!response.ok) {
+    throw new SummarizeError(describe(response.status, await errorDetail(response), response));
+  }
 
-  // Adaptive thinking is on by default, so the response can contain blocks
-  // other than text. Only text blocks carry the answer.
-  const text = body.content
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text as string)
-    .join("");
+  const body = (await response.json()) as ChatResponse;
+  const choice = body.choices?.[0];
+  if (!choice) {
+    throw new SummarizeError(
+      `モデル提供元 (${providerHost()}) が空の応答を返しました。`,
+      clip(JSON.stringify(body)),
+    );
+  }
+
+  const text = extractText(choice);
+
+  if (choice.finish_reason === "length") {
+    // An empty answer here means the model spent the whole budget on thinking.
+    const cause =
+      text.trim().length === 0
+        ? "推論に使い切られ、本文が返りませんでした"
+        : "達して途中で切れました";
+    throw new SummarizeError(
+      `応答が上限 (${MAX_OUTPUT_TOKENS} トークン) に${cause}。`,
+      clip(text),
+    );
+  }
+
+  if (text.trim().length === 0) {
+    throw new SummarizeError("モデルの応答が空でした。", clip(JSON.stringify(choice)));
+  }
 
   return parseSummary(text);
+}
+
+/**
+ * Sends the request, retrying while the failure is transient and the deadline
+ * allows. Free-tier endpoints answer 503 "high demand" often enough that one
+ * attempt is not a working app; the same request usually succeeds seconds
+ * later. Anything the caller could fix — a bad key, a wrong model — comes back
+ * on the first attempt instead.
+ */
+async function post(
+  apiKey: string,
+  messages: ChatMessage[],
+  jsonMode: boolean,
+  deadline: number,
+): Promise<Response> {
+  // No temperature or top_p. Providers disagree on both the allowed range and
+  // the default, and some reject non-default sampling parameters outright, so
+  // the request carries only what every implementation accepts.
+  const body: Record<string, unknown> = {
+    model: modelName(),
+    messages,
+    max_tokens: MAX_OUTPUT_TOKENS,
+  };
+  if (jsonMode) body.response_format = { type: "json_object" };
+  const payload = JSON.stringify(body);
+
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint(), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: payload,
+        signal: AbortSignal.timeout(Math.min(REQUEST_TIMEOUT_MS, remaining)),
+        cache: "no-store",
+      });
+    } catch (error) {
+      lastError = error;
+      if (!(await pause(retryDelay(attempt, null), deadline))) break;
+      continue;
+    }
+
+    if (response.ok || !RETRY_STATUSES.has(response.status)) return response;
+    if (attempt === MAX_ATTEMPTS) return response;
+
+    const delay = retryDelay(attempt, response.headers.get("retry-after"));
+    if (delay === null) return response;
+    // The body is not read on a retry; release it rather than leak the socket.
+    await response.body?.cancel().catch(() => undefined);
+    if (!(await pause(delay, deadline))) return response;
+  }
+
+  const name = lastError instanceof Error ? lastError.name : "";
+  if (name === "TimeoutError" || name === "AbortError") {
+    throw new SummarizeError(
+      `モデル提供元 (${providerHost()}) が時間内に応答しませんでした。しばらく待ってから再試行してください。`,
+    );
+  }
+  const reason = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new SummarizeError(`モデル提供元 (${providerHost()}) に接続できませんでした: ${reason}`);
+}
+
+/** How long to wait before the next attempt, or null if waiting is pointless. */
+function retryDelay(attempt: number, retryAfter: string | null): number | null {
+  if (retryAfter !== null) {
+    const seconds = Number(retryAfter);
+    if (!Number.isFinite(seconds)) return RETRY_BASE_DELAY_MS * attempt;
+    const requested = seconds * 1000;
+    return requested > MAX_RETRY_AFTER_MS ? null : requested;
+  }
+  return RETRY_BASE_DELAY_MS * attempt;
+}
+
+/** Waits, unless that would eat the deadline. Returns whether to try again. */
+async function pause(delay: number | null, deadline: number): Promise<boolean> {
+  if (delay === null) return false;
+  if (Date.now() + delay >= deadline) return false;
+  await new Promise((resolve) => setTimeout(resolve, delay));
+  return true;
+}
+
+/** Reads the error body once and returns whatever explanation it carries. */
+async function errorDetail(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as {
+      error?: { message?: string } | string;
+      message?: string;
+    };
+    if (typeof body.error === "string") return body.error;
+    return body.error?.message ?? body.message ?? response.statusText;
+  } catch {
+    // Non-JSON error body; the status text stands.
+    return response.statusText;
+  }
+}
+
+/** Turns a provider error into something that says what to change. */
+function describe(status: number, detail: string, response: Response): string {
+  if (status === 401 || status === 403) {
+    return `LLM_API_KEY が拒否されました (${status})。${providerHost()} で発行したキーか確認してください: ${detail}`;
+  }
+  if (status === 404) {
+    return `モデル ${modelName()} が見つかりません (404)。LLM_MODEL と LLM_BASE_URL は組で変える必要があります: ${detail}`;
+  }
+  if (status === 429) {
+    const retryAfter = response.headers.get("retry-after");
+    const wait = retryAfter ? `${retryAfter} 秒後に` : "しばらく待ってから";
+    return `無料枠のレート上限に達しました (429)。${wait}再試行してください: ${detail}`;
+  }
+  if (status >= 500) {
+    return `モデル提供元 (${providerHost()}) が ${MAX_ATTEMPTS} 回とも一時エラーを返しました (${status})。混雑しています。少し待つか、LLM_MODEL を別のモデルに変えてください: ${detail}`;
+  }
+  return `モデル提供元 (${providerHost()}) がエラーを返しました (${status}): ${detail}`;
+}
+
+/**
+ * Only the assistant's text counts. Thinking models expose their reasoning as a
+ * separate field or wrapped in <think> tags, and neither is the answer.
+ */
+function extractText(choice: ChatChoice): string {
+  const content = choice.message?.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .filter((part) => part.type === undefined || part.type === "text")
+            .map((part) => part.text ?? "")
+            .join("")
+        : "";
+
+  return text.replace(/<think>[\s\S]*?<\/think>/gi, "");
 }
 
 /** Pulls the JSON object out of the response and validates its shape. */

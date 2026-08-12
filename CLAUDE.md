@@ -37,13 +37,21 @@ GitHub のスター一覧を「未読の学習キュー」として扱い、リ�
   LLM を呼ばない。
 - 要約のキャッシュキーは `フルネーム@ツリーSHA`。ユーザー ID を含めない。
   同じ内容なら誰が開いても同じ結果でよく、内容が変われば SHA が変わる。
-- プライベートリポジトリの要約はキャッシュに書かない
+- プライベートリポジトリの要約は既定で行わない。`ALLOW_PRIVATE_REPOS` が
+  真のときだけ生成し、その場合もキャッシュには書かない
   （`src/app/api/summary/route.ts` の `isPrivate` 分岐）。
 - LLM の出力は JSON で受け取り、`src/lib/summarize.ts` の `parseSummary` で
   検証する。パースに失敗したら握り潰さず、生の応答を画面に出す。
-- Claude API を呼ぶとき `temperature` や `top_p` を設定しない。
-  Sonnet 5 は既定値以外を渡すと 400 を返す。応答には thinking ブロックが
-  含まれうるので、`type === "text"` のブロックだけを連結する。
+- モデル提供元は OpenAI 互換の chat-completions に限る。呼び出しは
+  `src/lib/summarize.ts` に集約し、提供元固有の SDK を入れない。
+  base URL・モデル ID・キーは `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY`
+  から読み、コードに埋めない。
+- `temperature` や `top_p` を設定しない。既定値も許容範囲も提供元ごとに
+  違い、非既定値を 400 で弾く提供元がある。送るのは全実装が受け付ける
+  パラメータだけにする。
+- 応答から取り出すのは assistant のテキストだけ。推論モデルは
+  `reasoning_content` や `<think>` タグで思考を返すので、`extractText` で
+  取り除く。
 
 ## 書き方
 
@@ -56,5 +64,6 @@ GitHub のスター一覧を「未読の学習キュー」として扱い、リ�
 ```bash
 npm run dev        # 開発サーバー
 npm run typecheck  # 型チェック
+npm test           # src/lib のテスト（node:test）
 npm run build      # 本番ビルド
 ```

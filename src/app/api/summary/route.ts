@@ -1,6 +1,6 @@
 import { fetchRepoContext, GitHubError } from "@/lib/github";
 import { getSummary, putSummary, summaryKey } from "@/lib/store";
-import { modelName, summarize, SummarizeError } from "@/lib/summarize";
+import { modelName, privateReposAllowed, summarize, SummarizeError } from "@/lib/summarize";
 import type { CachedSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -27,6 +27,20 @@ export async function POST(request: Request) {
     // Nothing is generated until someone opens a card, and the tree SHA is what
     // decides whether the previous answer is still valid.
     const context = await fetchRepoContext(owner, name);
+
+    // Summarising means sending the contents to a third party. For public
+    // repositories that changes nothing; for a private one it is a disclosure,
+    // so it takes an explicit opt-in.
+    if (context.isPrivate && !privateReposAllowed()) {
+      return Response.json(
+        {
+          error:
+            "プライベートリポジトリの要約は既定で行いません。内容がモデル提供元に送られるためです。許可する場合は .env.local に ALLOW_PRIVATE_REPOS=true を設定してください。",
+        },
+        { status: 403 },
+      );
+    }
+
     const key = summaryKey(context.fullName, context.treeSha);
 
     const cached = await getSummary(key);
