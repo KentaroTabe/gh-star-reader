@@ -2,6 +2,7 @@ node_modules/
 .next/
 out/
 build/
+.test-build/
 
 # Local state: summary cache and read records. Personal, regenerable.
 .data/
