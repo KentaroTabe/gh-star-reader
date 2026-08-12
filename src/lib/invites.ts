@@ -1,8 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 
-import { env } from "./env";
+import { db } from "./db";
 
 /**
  * The whole access model, in one file.
@@ -15,15 +13,6 @@ import { env } from "./env";
  * in the app reads them.
  */
 
-/** Resolved per call, for the same reason as in ./store. */
-function dataDir(): string {
-  return env("DATA_DIR") ?? path.join(process.cwd(), ".data");
-}
-
-function inviteFile(): string {
-  return path.join(dataDir(), "invites.json");
-}
-
 /** 16 bytes of randomness: too much to guess, short enough to paste. */
 const TOKEN_BYTES = 16;
 
@@ -35,41 +24,47 @@ export type Invite = {
   revokedAt: string | null;
 };
 
-/** token -> invite. The token is never used as the read-state key, so that
- *  reissuing a link does not throw away what that person has read. */
-type InviteMap = Record<string, Invite>;
+type Row = {
+  viewer_id: unknown;
+  name: unknown;
+  created_at: unknown;
+  revoked_at: unknown;
+};
 
-async function readInvites(): Promise<InviteMap> {
-  try {
-    return JSON.parse(await fs.readFile(inviteFile(), "utf8")) as InviteMap;
-  } catch {
-    // No file yet means nobody has been invited.
-    return {};
-  }
-}
-
-async function writeInvites(map: InviteMap): Promise<void> {
-  await fs.mkdir(dataDir(), { recursive: true });
-  const file = inviteFile();
-  const temporary = `${file}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify(map, null, 2), "utf8");
-  await fs.rename(temporary, file);
+function toInvite(row: Row): Invite {
+  return {
+    id: String(row.viewer_id),
+    name: String(row.name),
+    createdAt: String(row.created_at),
+    revokedAt: row.revoked_at === null ? null : String(row.revoked_at),
+  };
 }
 
 export async function findInvite(token: string): Promise<Invite | null> {
   if (!token) return null;
-  const invite = (await readInvites())[token];
-  if (!invite || invite.revokedAt) return null;
-  return invite;
+  const client = await db();
+  const result = await client.execute({
+    sql: "SELECT viewer_id, name, created_at, revoked_at FROM invites WHERE token = ? AND revoked_at IS NULL",
+    args: [token],
+  });
+  const row = result.rows[0];
+  return row ? toInvite(row as unknown as Row) : null;
 }
 
 export async function listInvites(): Promise<{ token: string; invite: Invite }[]> {
-  const map = await readInvites();
-  return Object.entries(map).map(([token, invite]) => ({ token, invite }));
+  const client = await db();
+  const result = await client.execute(
+    "SELECT token, viewer_id, name, created_at, revoked_at FROM invites ORDER BY created_at",
+  );
+  return result.rows.map((row) => ({
+    token: String(row.token),
+    invite: toInvite(row as unknown as Row),
+  }));
 }
 
+/** The token is returned once, here. It is not recoverable from the row later
+ *  by design — the link is a credential, and reissuing is cheap. */
 export async function createInvite(name: string): Promise<{ token: string; invite: Invite }> {
-  const map = await readInvites();
   const token = randomBytes(TOKEN_BYTES).toString("hex");
   const invite: Invite = {
     id: `v_${randomBytes(6).toString("hex")}`,
@@ -77,20 +72,25 @@ export async function createInvite(name: string): Promise<{ token: string; invit
     createdAt: new Date().toISOString(),
     revokedAt: null,
   };
-  map[token] = invite;
-  await writeInvites(map);
+
+  const client = await db();
+  await client.execute({
+    sql: "INSERT INTO invites (token, viewer_id, name, created_at, revoked_at) VALUES (?, ?, ?, ?, NULL)",
+    args: [token, invite.id, invite.name, invite.createdAt],
+  });
+
   return { token, invite };
 }
 
 /** Revokes by token or by viewer id. Read state is kept; only access stops. */
 export async function revokeInvite(tokenOrId: string): Promise<Invite | null> {
-  const map = await readInvites();
-  const entry = Object.entries(map).find(
-    ([token, invite]) => token === tokenOrId || invite.id === tokenOrId,
-  );
-  if (!entry) return null;
-  const [token, invite] = entry;
-  map[token] = { ...invite, revokedAt: new Date().toISOString() };
-  await writeInvites(map);
-  return map[token];
+  const client = await db();
+  const result = await client.execute({
+    sql: `UPDATE invites SET revoked_at = ?
+          WHERE (token = ? OR viewer_id = ?) AND revoked_at IS NULL
+          RETURNING viewer_id, name, created_at, revoked_at`,
+    args: [new Date().toISOString(), tokenOrId, tokenOrId],
+  });
+  const row = result.rows[0];
+  return row ? toInvite(row as unknown as Row) : null;
 }

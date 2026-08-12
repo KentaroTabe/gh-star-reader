@@ -49,10 +49,12 @@ http://localhost:3000 を開いてください。
 | `LLM_BASE_URL` | 任意 | 既定は Google AI Studio |
 | `LLM_MODEL` | 任意 | 既定は `gemini-3.6-flash` |
 | `ALLOW_PRIVATE_REPOS` | 任意 | プライベートリポジトリの要約を許可する。既定は無効 |
-| `DATA_DIR` | 任意 | 保存先。既定は `./.data` |
+| `TURSO_DATABASE_URL` | 任意 | 既定はローカルファイル `file:./.data/gh-star-reader.db`。デプロイ時は Turso の `libsql://…` |
+| `TURSO_AUTH_TOKEN` | Turso 使用時 | Turso のトークン。ローカルファイルでは不要 |
+| `ADMIN_TOKEN` | 招待管理時 | 招待の発行・失効に使う。未設定なら管理 API は無効 |
+| `BASE_URL` | 任意 | `npm run invite` の接続先。既定は `http://localhost:3000` |
 | `DEV_ORIGINS` | 任意 | 開発サーバーを LAN アドレスで開くときのホスト（カンマ区切り）。下記参照 |
 | `INVITE_REQUIRED` | 任意 | 招待リンクを必須にする。既定は本番ビルドで有効、開発で無効 |
-| `BASE_URL` | 任意 | 招待リンクを印字するときの URL。`npm run invite` でのみ使う |
 
 いずれもサーバー側でのみ読みます。ブラウザには渡りません。
 
@@ -113,6 +115,10 @@ npm run invite -- list           # 誰に渡したかを見る
 npm run invite -- revoke <token> # 失効させる（読了記録は残る）
 ```
 
+このコマンドは**動いているインスタンスに HTTP で話しかけます**（`BASE_URL` と
+`ADMIN_TOKEN` が要ります）。デプロイ先にシェルで入る必要がないので、Render の
+無料プランでも運用できます。
+
 相手がその URL を一度開くと、トークンが HttpOnly cookie に移り、以後は
 普通のページとして使えます。**リンクそのものが鍵**なので、公開の場所には
 置かないでください。失効させれば次のリクエストから 401 になります。
@@ -126,28 +132,39 @@ npm run invite -- revoke <token> # 失効させる（読了記録は残る）
 リポジトリは見せません**（`ALLOW_PRIVATE_REPOS` を有効にしない限り、一覧から
 除外されます）。
 
-### Fly.io に置く
+### Render に置く
 
-`Dockerfile` と `fly.toml` が同梱してあります。永続ディスクが要るのは、
-要約キャッシュ・読了記録・招待リストがファイルだからです（消えると全員の
-リンクが無効になります）。
+アプリは Render、状態は Turso（libSQL）です。ディスクを持たないので、
+インスタンスが作り直されても招待リンクと読了記録は残ります。
 
 ```bash
-brew install flyctl
-fly auth login
-fly launch --no-deploy          # app 名とリージョンを確認する
-fly volumes create gh_star_reader_data --size 1
-fly secrets set LLM_API_KEY=… GITHUB_TOKEN=…
-fly deploy
-fly ssh console -C "node scripts/invite.mjs add 田辺"
+# 1. Turso 側
+turso db create gh-star-reader
+turso db show gh-star-reader --url        # → TURSO_DATABASE_URL
+turso db tokens create gh-star-reader     # → TURSO_AUTH_TOKEN
+```
+
+テーブルは初回アクセス時に作られるので、マイグレーションの手順はありません。
+
+```bash
+# 2. Render 側
+#    render.yaml を Blueprint として読み込ませ、次を設定する
+#      TURSO_DATABASE_URL  TURSO_AUTH_TOKEN
+#      LLM_API_KEY         GITHUB_TOKEN
+#      ADMIN_TOKEN         （自分で決めた長い文字列）
+
+# 3. 招待を配る
+BASE_URL=https://<your-app>.onrender.com ADMIN_TOKEN=… npm run invite -- add 田辺
 ```
 
 `GITHUB_TOKEN` は実質必須です。未設定だと 60 リクエスト/時で、要約 1 件が
 20 リクエスト前後を使うため、数人で触ればすぐ止まります。
 
-同じ `Dockerfile` は Render でもそのまま動きます（Disk を `/data` に
-マウントし、`DATA_DIR=/data` と `INVITE_REQUIRED=true` を設定してください）。
-Vercel には置けません。ファイルに直接書くためです。
+無料プランは無通信が続くとインスタンスが停止し、次のアクセスで数十秒かかります。
+`/api/health` は DB への疎通も見ているので、外形監視から叩けば起こし続けられます。
+
+Vercel には置けません。要約の生成に 1 分近くかかることがあり、関数の実行時間に
+収まらないためです。
 
 ## 設計方針
 
@@ -197,17 +214,15 @@ GitHub 側 : スター = 追加専用の入力キュー（読み取り専用）
 
 ## 保存されるもの
 
-```
-.data/summaries.json   要約のキャッシュ（全員で共有）
-.data/languages.json   言語構成のキャッシュ
-.data/reading.json     読了記録（閲覧者 × GitHub アカウント）
-.data/invites.json     招待リンク
-```
+libSQL の 4 テーブルです。ローカルでは `.data/gh-star-reader.db`（gitignore
+済み）、デプロイ先では Turso。同じコードが両方を見ます。
 
-いずれもファイルで、gitignore 済みです。キャッシュは消しても作り直されますが、
-`reading.json` と `invites.json` は消すと戻りません（読了記録が失われ、
-配った招待リンクが全部無効になります）。デプロイ先で永続ディスクが要るのは
-このためです。
+| テーブル | 内容 | 消えたら |
+| --- | --- | --- |
+| `summaries` | 要約キャッシュ（全員で共有） | 作り直される |
+| `languages` | 言語構成キャッシュ | 取り直される |
+| `reading` | 読了記録（閲覧者 × GitHub アカウント） | **戻らない** |
+| `invites` | 招待リンク | **戻らない**（配ったリンクが全部無効になる） |
 
 ## 制約
 

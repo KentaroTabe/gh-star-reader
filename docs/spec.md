@@ -67,6 +67,15 @@ API も渡さない。偽のときは `owner` という単一の閲覧者とし�
 までの新規取得を返し、残り件数を `remaining` で伝える。クライアントは
 0 になるまで繰り返す。
 
+### `GET` / `POST` / `DELETE /api/admin/invites`
+
+招待の一覧・発行・失効。`x-admin-token` が `ADMIN_TOKEN` と一致するときだけ
+応じる。未設定なら 503（既定で開いていない）。`npm run invite` がこれを叩く。
+
+### `GET /api/health`
+
+DB への疎通を含めた死活確認。Render のヘルスチェック先。
+
 ### `GET` / `POST /api/reading`
 
 読了記録の取得と更新。`GET` は `?user={githubUser}`、`POST` のボディは
@@ -120,15 +129,17 @@ type Summary = {
 
 ## 保存
 
-| ファイル | 内容 | キー |
-| --- | --- | --- |
-| `.data/summaries.json` | 要約キャッシュ | `owner/name@treeSha` |
-| `.data/languages.json` | 言語構成キャッシュ | `owner/name@pushedAt` |
-| `.data/reading.json` | 読了記録 | `閲覧者ID → GitHubユーザー → owner/name` |
-| `.data/invites.json` | 招待リンク | `token` |
+libSQL（ローカルはファイル、デプロイ先は Turso）。
 
-どちらも gitignore 済み。書き込みは直列化し、テンポラリファイル経由で
-rename する。
+| テーブル | 内容 | 主キー |
+| --- | --- | --- |
+| `summaries` | 要約キャッシュ | `key` = `owner/name@treeSha` |
+| `languages` | 言語構成キャッシュ | `key` = `owner/name@pushedAt` |
+| `reading` | 読了記録 | `(viewer_id, github_user, repo_id)` |
+| `invites` | 招待リンク | `token` |
+
+スキーマは `src/lib/db.ts` にあり、初回アクセス時に `CREATE TABLE IF NOT
+EXISTS` で適用される。読了記録の分離は主キーが保証する。
 
 キャッシュキーにユーザー ID を含めないのは、意図的に共有するためではなく、
 それが最も単純なキーだから。再オープンで再生成しないことが第一の目的で、

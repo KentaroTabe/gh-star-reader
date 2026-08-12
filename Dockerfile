@@ -1,11 +1,11 @@
-# Three stages so the shipped image carries a server and nothing else: no
-# toolchain, no node_modules, no source.
-FROM node:22-alpine AS deps
+# Debian rather than Alpine: @libsql/client loads a native binding, and the
+# musl build is the one that tends to be missing for a given platform.
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM node:22-alpine AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
@@ -13,20 +13,16 @@ COPY . .
 # environment variables instead, so none is copied in.
 RUN npm run build
 
-FROM node:22-alpine AS runtime
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-# Summary cache, read state and invites. Mounted as a volume in production —
-# without one, every deploy would hand out new invite links.
-ENV DATA_DIR=/data
 
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/scripts/invite.mjs ./scripts/invite.mjs
 
-RUN mkdir -p /data && chown -R node:node /data
 USER node
 
-EXPOSE 3000
+# Render supplies PORT; this is the fallback for a plain docker run.
 ENV PORT=3000 HOSTNAME=0.0.0.0
+EXPOSE 3000
 CMD ["node", "server.js"]
